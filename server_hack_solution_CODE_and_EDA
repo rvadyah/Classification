@@ -1,0 +1,186 @@
+_____________________________________________________
+Author: Ravi Prakash
+Problem: Identify the vulnerable activities
+Problem setter: NOVARTIS
+
+Algorithm: XGBoost Classifier
+_____________________________________________________
+
+
+####_________________EDA steps__________________________####
+
+* Checked Range of Each column 
+* Checked the distribution of each columns
+* Few column could be considered as columns with continuous values but
+* Post checking the range and distribution considered them as columns with discrete values
+* Most of the values for every column were concentrated in certain range
+* Post checking the relation of each column with "MULTIPLE_RESPONSE" column 
+* Found out that most of the incidents in each column are contributing to  "Positive MULTIPLE_RESPONSE"
+* Checked for null values and found only "X_12 column" with null
+* All null values were giving MULTIPLE_RESPONSE as 1
+* Imputed null values with "-100" to give it unique identification, instead of imputing it with mode or meedian 
+
+* Post EDA 
+* first performed Logistic Regression on train data and diddn't find the result satifactory. Though the accuracy was high but recall score was not good enough
+* Post Logistic Regression Choose XGBoost Classifier 
+* Performed hyperparameter tunning with RandomizedSearchCV for faster output
+
+
+####_____________Code_________________####
+
+# Importing packages 
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+%matplotlib inline
+from sklearn.linear_model import LogisticRegression
+import xgboost as xgb
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report
+from sklearn.metrics import accuracy_score
+from sklearn.metrics import recall_score
+from sklearn.metrics import precision_score
+
+## Hyperparameter optimization using RandomizedSearchCV
+from sklearn.model_selection import RandomizedSearchCV, GridSearchCV
+
+from sklearn.model_selection import cross_val_score
+
+# Reading training data
+df = pd.read_csv("dataset/Train.csv")
+df.head()
+
+sns.countplot(x='MULTIPLE_OFFENSE', data = df)	
+
+#Check for NULL Values
+df.isnull().sum()
+df[df['X_12'].isnull()].MULTIPLE_OFFENSE.value_counts()
+
+# Iterate through the MULTIPLE_OFFENSE values
+values= df.MULTIPLE_OFFENSE.unique()
+values = list(values)
+for value in values:
+    subset = df[df.MULTIPLE_OFFENSE==value]
+    
+    # Draw the density plot
+    sns.distplot(subset['X_12'], hist = False, kde = True,
+                 kde_kws = {'linewidth': 3},
+                 label = value)
+    
+# Plot formatting
+plt.legend(prop={'size': 16}, title = 'Hack or Not')
+plt.title('Density Plot with Hacked Incident')
+plt.xlabel('X_12')
+plt.ylabel('Count')
+
+#Imputing NUll values
+df.fillna("-100",inplace=True)	
+df['X_12'] = pd.to_numeric(df['X_12'])
+df.isnull().sum()
+
+#Model Building
+X = df.iloc[:,2:17]
+Y = df.MULTIPLE_OFFENSE
+
+#data split
+x_train, x_test, y_train, y_test = train_test_split(X, Y, test_size=0.3)
+print(f"x_train: {x_train.shape}")
+print(f"x_test : {x_test.shape}")
+print(f"y_train : {y_train.shape}")
+print(f"y_test : {y_test.shape}")
+
+#UDF for model Summary
+def summarize_classification(y_test, y_pred):
+    
+    acc = accuracy_score(y_test, y_pred, normalize=True)
+    num_acc = accuracy_score(y_test, y_pred, normalize=False)
+    
+    prec = precision_score(y_test, y_pred)
+    recall = recall_score(y_test, y_pred)
+    
+    print("accuracy_count : ", num_acc)
+    print("accuracy_score : ", acc)
+    print("precision_score : ", prec)
+    print("recall_score : ", recall)
+    print()
+
+
+
+#First model Logistic Regression
+
+log_model = LogisticRegression()
+log_model.fit(x_train, y_train)
+y_predict = log_model.predict(x_test)
+print(classification_report(y_test, y_predict))
+
+pred_results = pd.DataFrame({
+        'y_test' : y_test,
+        'y_pred' : y_predict
+    })
+pred_results.head()
+
+pd.crosstab(pred_results.y_pred, pred_results.y_test)
+summarize_classification(pred_results.y_test, pred_results.y_pred)
+
+# Implementing XGBoost Classifier
+model = xgb.XGBClassifier()
+model.fit(x_train, y_train)
+
+y_predict = model.predict(x_test)
+pred_results = pd.DataFrame({
+        'y_test' : y_test,
+        'y_pred' : y_predict
+    })
+pred_results.head()
+summarize_classification(pred_results.y_test, pred_results.y_pred)
+
+## Hyper Parameter Optimization
+params={
+ "learning_rate"    : [0.05, 0.10, 0.15, 0.20, 0.25, 0.30 ] ,
+ "max_depth"        : [ 3, 4, 5, 6, 8, 10, 12, 15],
+ "min_child_weight" : [ 1, 3, 5, 7 ],
+ "gamma"            : [ 0.0, 0.1, 0.2 , 0.3, 0.4 ],
+ "colsample_bytree" : [ 0.3, 0.4, 0.5 , 0.7 ]
+    
+}
+  
+# UDF to record model trainig time  
+from datetime import datetime  
+def timer(start_time=None):
+    
+    if not start_time:
+        start_time = datetime.now()
+        return start_time
+    
+    elif start_time:
+        thour, temp_sec = divmod((datetime.now() - start_time).total_seconds(), 3600)
+        tmin, tsec = divmod(temp_sec, 60)
+        print(f'Time taken: {thour}, minutes: {tmin}, and seconds: {round(tsec,2)}')  
+		
+classifier = xgb.XGBClassifier()
+#Hyperparameter tunning with cross validation and random search
+random_search = RandomizedSearchCV(classifier, param_distributions=params,
+                                  n_iter=5, scoring="roc_auc", n_jobs=-1, cv=10, verbose=3)
+
+start_time = timer(None)
+random_search.fit(x_train,y_train)
+timer(start_time)
+
+#checking for best parameters
+random_search.best_params_
+
+#builing model with best parameters
+classifier = xgb.XGBClassifier(base_score=0.5, booster='gbtree', colsample_bylevel=1,
+              colsample_bynode=1, colsample_bytree=0.5, gamma=0.1, gpu_id=-1,
+              importance_type='gain', interaction_constraints='',
+              learning_rate=0.05, max_delta_step=0, max_depth=12,
+              min_child_weight=5,  monotone_constraints='()',
+              n_estimators=100, n_jobs=0, num_parallel_tree=1,
+              objective='binary:logistic', random_state=0, reg_alpha=0,
+              reg_lambda=1, scale_pos_weight=1, subsample=1,
+              tree_method='exact', validate_parameters=1, verbosity=None)
+
+#prediction on test data(Subset of training data)
+y_predict = classifier.predict(x_test)
+summarize_classification(pred_results.y_test, pred_results.y_pred)
